@@ -1,0 +1,17 @@
+/target/
+/node_modules/
+/web/node_modules/
+/web/dist/
+/.env
+/.env.*
+/deploy/.env
+/deploy/.env.*
+!/deploy/.env.example
+/.sqlx/
+/.idea/
+/.vscode/
+*.log
+.DS_Store
+
+# Reference material is intentionally not part of the new application.
+/temp/

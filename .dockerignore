@@ -1,0 +1,10 @@
+.git
+.github
+.env
+.env.*
+!deploy/.env.example
+target
+web/node_modules
+web/dist
+temp
+*.log

@@ -1,7 +1,17 @@
 name: Docker image
+run-name: Docker image (${{ inputs.channel }}) · ${{ github.ref_name }}
 
 on:
   workflow_dispatch:
+    inputs:
+      channel:
+        description: Image channel to publish
+        required: true
+        default: edge
+        type: choice
+        options:
+          - edge
+          - dev
 
 permissions:
   contents: read
@@ -11,10 +21,21 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.channel }}
+  cancel-in-progress: true
+
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
+      - name: Validate channel source
+        if: inputs.channel == 'dev' && github.ref != 'refs/heads/dev'
+        run: |
+          echo "The dev image must be built from the dev branch." >&2
+          exit 1
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -37,8 +58,9 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           flavor: latest=false
           tags: |
-            type=sha,format=short,prefix=sha-
-            type=raw,value=edge
+            type=raw,value=${{ inputs.channel }}
+            type=sha,format=short,prefix=sha-,enable=${{ inputs.channel == 'edge' }}
+            type=sha,format=short,prefix=dev-sha-,enable=${{ inputs.channel == 'dev' }}
 
       - name: Build and push image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0

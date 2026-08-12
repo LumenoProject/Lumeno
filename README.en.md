@@ -163,6 +163,8 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.yml pull
 docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d
 ```
 
+To validate the `dev` branch, manually run the repository's “Docker image” workflow and select the `dev` channel. It publishes `ghcr.io/lumenoproject/lumeno:dev` and a matching `dev-sha-<short-commit>` tag. The floating `dev` image is replaced by later builds and is not intended for production; use a `dev-sha-*` tag or image digest when a test deployment must remain fixed.
+
 On first startup, the application automatically initializes an empty database with the schema required by the current version. The phase-two RSIP model does not include an in-place upgrade or backfill path for the earlier `rsip_nodes` schema; do not apply this initial migration directly to an existing earlier database. Users, contracts, records, and notification configuration are stored in PostgreSQL. Back up the `postgres-data` volume or external database regularly, and verify that backups can be restored.
 
 To use an external PostgreSQL database, set `DATABASE_URL` in `deploy/.env`, then start only the application and ingress services:

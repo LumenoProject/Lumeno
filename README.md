@@ -163,6 +163,8 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.yml pull
 docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d
 ```
 
+需要验证 `dev` 分支时，可以手动运行仓库的 “Docker image” 工作流并选择 `dev` 渠道。它会发布 `ghcr.io/lumenoproject/lumeno:dev` 和对应的 `dev-sha-<短提交号>` 标签。`dev` 是会被后续构建覆盖的开发镜像，不用于生产部署；需要固定测试版本时应使用 `dev-sha-*` 标签或镜像 digest。
+
 首次启动时，应用会在空数据库中自动初始化当前版本所需的结构。第二阶段的 RSIP 数据模型不提供旧版 `rsip_nodes` 数据回填或原地升级路径；已有旧版数据库不能直接套用本版本的初始迁移。用户、契约、记录和通知配置存放在 PostgreSQL 中；请定期备份 `postgres-data` 数据卷或外部数据库，并验证备份可以恢复。
 
 如需使用外部 PostgreSQL，在 `deploy/.env` 中设置 `DATABASE_URL`，然后只启动应用和入口服务：

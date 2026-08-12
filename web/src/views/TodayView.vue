@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue'
-import { ArrowRight, CheckCircle2, Flame, Gauge, ShieldAlert } from '@lucide/vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { ArrowRight, CheckCircle2, Flame, Gauge, Layers3, ShieldAlert, Target } from '@lucide/vue'
 import ChainCard from '../components/ChainCard.vue'
+import { api } from '../lib/api'
 import { bookingPhase, bookingPhaseDeadline } from '../lib/booking'
 import { formatCountdown, remainingMilliseconds } from '../lib/time'
 import { useAppStore } from '../stores/app'
-import type { Booking } from '../types'
+import type { Booking, RsipToday } from '../types'
 
 const app = useAppStore()
+const rsip = ref<RsipToday | null>(null)
 const now = ref(Date.now())
 let previousNow = now.value
 const timer = window.setInterval(() => {
@@ -22,6 +24,13 @@ const timer = window.setInterval(() => {
   if (crossedExpiry) void app.refresh()
 }, 1000)
 onBeforeUnmount(() => window.clearInterval(timer))
+onMounted(async () => {
+  try {
+    rsip.value = await api<RsipToday>('/api/v1/rsip/today')
+  } catch (error) {
+    app.report(error)
+  }
+})
 
 const date = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }).format(new Date())
 const topChains = computed(() => app.unitChains.slice(0, 5))
@@ -104,6 +113,16 @@ function bookingStatus(booking: Booking) {
           <span><i class="failure-dot"></i>{{ record.failures }} 次失守</span>
         </div>
       </div>
+    </section>
+
+    <section v-if="rsip" class="section-block">
+      <div class="section-heading"><div><p class="eyebrow">RSIP TODAY</p><h2>今天的定式</h2></div><RouterLink to="/rsip" class="text-link">打开定式 <ArrowRight :size="15" /></RouterLink></div>
+      <article class="paper-panel rsip-today-panel">
+        <Target :size="20" /><div><strong>{{ rsip.canDeployToday ? '今天还可以点亮 1 条国策' : '今天的点亮名额已使用' }}</strong><p>{{ rsip.pendingTrials.length ? `有 ${rsip.pendingTrials.length} 条成功试行等待部署。` : '成功试行后，才会出现待部署国策。' }}</p></div><RouterLink v-if="rsip.pendingTrials.length" to="/rsip" class="secondary">去部署</RouterLink>
+      </article>
+      <article v-for="group in rsip.groups" :key="group.nodeId" class="paper-panel rsip-today-panel">
+        <Layers3 :size="20" /><div><strong>{{ group.name }} · {{ group.everEffective ? '已降级' : '形成中' }}</strong><p>当前 {{ group.activeMembers }} 个成员，至少需要 {{ group.minimumActiveMembers }} 个；目标 {{ group.targetMemberCount }} 个。</p></div><RouterLink to="/rsip" class="secondary">补充成员</RouterLink>
+      </article>
     </section>
 
     <section v-if="!app.chains.length" class="empty-panel section-block">

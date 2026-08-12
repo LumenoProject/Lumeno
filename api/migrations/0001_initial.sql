@@ -6,7 +6,9 @@ CREATE TYPE booking_state AS ENUM ('pending', 'fulfilled', 'awaiting_judgment', 
 CREATE TYPE focus_state AS ENUM ('running', 'completion_ready', 'awaiting_judgment', 'succeeded', 'failed');
 CREATE TYPE group_run_state AS ENUM ('running', 'awaiting_judgment', 'succeeded', 'failed');
 CREATE TYPE judgment_scope AS ENUM ('main', 'auxiliary', 'group_deadline');
-CREATE TYPE rsip_node_state AS ENUM ('draft', 'active', 'archived');
+CREATE TYPE rsip_policy_mode AS ENUM ('active', 'passive', 'anchored');
+CREATE TYPE rsip_tree_node_kind AS ENUM ('policy', 'group');
+CREATE TYPE rsip_deployment_state AS ENUM ('active', 'extinguished');
 
 CREATE TABLE app_users (
   id uuid PRIMARY KEY,
@@ -216,51 +218,155 @@ CREATE TABLE negative_states (
   cues text NOT NULL DEFAULT '' CHECK (char_length(cues) <= 4000),
   consequences text NOT NULL DEFAULT '' CHECK (char_length(consequences) <= 4000),
   created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (id, user_id)
 );
 
 CREATE TABLE traceback_steps (
   id uuid PRIMARY KEY,
   user_id uuid NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
-  negative_state_id uuid NOT NULL REFERENCES negative_states(id) ON DELETE CASCADE,
+  negative_state_id uuid NOT NULL,
   traceback_id uuid NOT NULL,
   position integer NOT NULL,
   decision text NOT NULL CHECK (char_length(decision) BETWEEN 1 AND 1000),
   is_intervention_point boolean NOT NULL DEFAULT false,
   created_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (traceback_id, position)
+  UNIQUE (traceback_id, position),
+  UNIQUE (id, user_id),
+  FOREIGN KEY (negative_state_id, user_id) REFERENCES negative_states(id, user_id) ON DELETE CASCADE
 );
 CREATE INDEX traceback_steps_negative_state_idx ON traceback_steps(negative_state_id, created_at);
 
-CREATE TABLE rsip_nodes (
+CREATE TABLE rsip_policies (
   id uuid PRIMARY KEY,
   user_id uuid NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
-  negative_state_id uuid REFERENCES negative_states(id) ON DELETE SET NULL,
-  intervention_step_id uuid REFERENCES traceback_steps(id) ON DELETE SET NULL,
-  parent_id uuid REFERENCES rsip_nodes(id),
-  state rsip_node_state NOT NULL DEFAULT 'draft',
+  current_revision integer NOT NULL DEFAULT 1 CHECK (current_revision > 0),
+  total_active_seconds bigint NOT NULL DEFAULT 0 CHECK (total_active_seconds >= 0),
+  deployment_count bigint NOT NULL DEFAULT 0 CHECK (deployment_count >= 0),
+  archived_at timestamptz,
+  version bigint NOT NULL DEFAULT 1,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (id, user_id)
+);
+CREATE INDEX rsip_policies_user_idx ON rsip_policies(user_id, updated_at DESC, id DESC);
+
+CREATE TABLE rsip_policy_revisions (
+  id uuid PRIMARY KEY,
+  policy_id uuid NOT NULL,
+  user_id uuid NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+  revision integer NOT NULL CHECK (revision > 0),
+  previous_revision_id uuid,
+  negative_state_id uuid,
+  intervention_step_id uuid,
+  mode rsip_policy_mode NOT NULL,
   title text NOT NULL CHECK (char_length(title) BETWEEN 1 AND 160),
   trigger_condition text NOT NULL CHECK (char_length(trigger_condition) BETWEEN 1 AND 1000),
   required_action text NOT NULL CHECK (char_length(required_action) BETWEEN 1 AND 1000),
   intended_prevention text NOT NULL DEFAULT '' CHECK (char_length(intended_prevention) <= 4000),
-  activated_on date,
-  activated_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (policy_id, revision),
+  UNIQUE (id, user_id),
+  UNIQUE (id, policy_id, user_id),
+  FOREIGN KEY (policy_id, user_id) REFERENCES rsip_policies(id, user_id) ON DELETE CASCADE,
+  FOREIGN KEY (previous_revision_id, user_id) REFERENCES rsip_policy_revisions(id, user_id),
+  FOREIGN KEY (negative_state_id, user_id) REFERENCES negative_states(id, user_id) ON DELETE SET NULL (negative_state_id),
+  FOREIGN KEY (intervention_step_id, user_id) REFERENCES traceback_steps(id, user_id) ON DELETE SET NULL (intervention_step_id)
+);
+CREATE INDEX rsip_policy_revisions_user_idx ON rsip_policy_revisions(user_id, policy_id, revision DESC);
+
+CREATE TABLE rsip_groups (
+  id uuid PRIMARY KEY,
+  user_id uuid NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+  name text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 160),
+  target_member_count integer NOT NULL CHECK (target_member_count BETWEEN 1 AND 50),
+  minimum_active_members integer NOT NULL CHECK (
+    minimum_active_members BETWEEN 1 AND target_member_count
+  ),
   archived_at timestamptz,
-  failure_reason text CHECK (failure_reason IS NULL OR char_length(failure_reason) <= 4000),
   version bigint NOT NULL DEFAULT 1,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
-  CHECK (parent_id IS NULL OR parent_id <> id),
-  CHECK ((state = 'active' AND activated_on IS NOT NULL AND activated_at IS NOT NULL) OR state <> 'active')
+  UNIQUE (id, user_id)
 );
-CREATE UNIQUE INDEX rsip_daily_activation_idx ON rsip_nodes(user_id, activated_on)
-  WHERE activated_on IS NOT NULL;
-CREATE INDEX rsip_parent_active_idx ON rsip_nodes(parent_id) WHERE state = 'active';
+CREATE INDEX rsip_groups_user_idx ON rsip_groups(user_id, updated_at DESC, id DESC);
+
+CREATE TABLE rsip_tree_nodes (
+  id uuid PRIMARY KEY,
+  user_id uuid NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+  kind rsip_tree_node_kind NOT NULL,
+  policy_id uuid,
+  policy_revision_id uuid,
+  group_id uuid,
+  parent_node_id uuid,
+  state rsip_deployment_state NOT NULL DEFAULT 'active',
+  deployed_on date,
+  deployed_at timestamptz NOT NULL DEFAULT now(),
+  extinguished_at timestamptz,
+  failure_reason text CHECK (failure_reason IS NULL OR char_length(failure_reason) <= 4000),
+  group_ever_effective boolean NOT NULL DEFAULT false,
+  version bigint NOT NULL DEFAULT 1,
+  CHECK (parent_node_id IS NULL OR parent_node_id <> id),
+  CHECK (
+    (kind = 'policy' AND policy_id IS NOT NULL AND policy_revision_id IS NOT NULL AND group_id IS NULL AND deployed_on IS NOT NULL)
+    OR
+    (kind = 'group' AND policy_id IS NULL AND policy_revision_id IS NULL AND group_id IS NOT NULL AND deployed_on IS NULL)
+  ),
+  CHECK (
+    (state = 'active' AND extinguished_at IS NULL AND failure_reason IS NULL)
+    OR
+    (state = 'extinguished' AND extinguished_at IS NOT NULL AND failure_reason IS NOT NULL)
+  ),
+  UNIQUE (id, user_id),
+  FOREIGN KEY (policy_id, user_id) REFERENCES rsip_policies(id, user_id),
+  FOREIGN KEY (policy_revision_id, policy_id, user_id) REFERENCES rsip_policy_revisions(id, policy_id, user_id),
+  FOREIGN KEY (group_id, user_id) REFERENCES rsip_groups(id, user_id),
+  FOREIGN KEY (parent_node_id, user_id) REFERENCES rsip_tree_nodes(id, user_id)
+);
+CREATE UNIQUE INDEX rsip_daily_deployment_idx ON rsip_tree_nodes(user_id, deployed_on)
+  WHERE kind = 'policy';
+CREATE UNIQUE INDEX rsip_one_active_policy_idx ON rsip_tree_nodes(user_id, policy_id)
+  WHERE kind = 'policy' AND state = 'active';
+CREATE UNIQUE INDEX rsip_one_active_group_idx ON rsip_tree_nodes(user_id, group_id)
+  WHERE kind = 'group' AND state = 'active';
+CREATE INDEX rsip_tree_parent_active_idx ON rsip_tree_nodes(parent_node_id)
+  WHERE state = 'active';
+CREATE INDEX rsip_tree_policy_history_idx ON rsip_tree_nodes(user_id, policy_id, deployed_at DESC);
+
+CREATE TABLE rsip_group_members (
+  group_node_id uuid NOT NULL,
+  policy_node_id uuid NOT NULL,
+  user_id uuid NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (group_node_id, policy_node_id),
+  UNIQUE (policy_node_id),
+  FOREIGN KEY (group_node_id, user_id) REFERENCES rsip_tree_nodes(id, user_id) ON DELETE CASCADE,
+  FOREIGN KEY (policy_node_id, user_id) REFERENCES rsip_tree_nodes(id, user_id) ON DELETE CASCADE
+);
+CREATE INDEX rsip_group_members_user_idx ON rsip_group_members(user_id, group_node_id);
+
+CREATE TABLE rsip_trials (
+  id uuid PRIMARY KEY,
+  user_id uuid NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+  policy_id uuid NOT NULL,
+  policy_revision_id uuid NOT NULL,
+  succeeded_on date NOT NULL,
+  succeeded_at timestamptz NOT NULL DEFAULT now(),
+  note text NOT NULL DEFAULT '' CHECK (char_length(note) <= 1000),
+  consumed_node_id uuid,
+  UNIQUE (user_id, policy_id, succeeded_on),
+  FOREIGN KEY (policy_id, user_id) REFERENCES rsip_policies(id, user_id) ON DELETE CASCADE,
+  FOREIGN KEY (policy_revision_id, policy_id, user_id) REFERENCES rsip_policy_revisions(id, policy_id, user_id),
+  FOREIGN KEY (consumed_node_id, user_id) REFERENCES rsip_tree_nodes(id, user_id)
+);
+CREATE INDEX rsip_trials_user_date_idx ON rsip_trials(user_id, succeeded_on DESC, succeeded_at DESC);
 
 CREATE TABLE rsip_events (
   id uuid PRIMARY KEY,
   user_id uuid NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
-  node_id uuid REFERENCES rsip_nodes(id) ON DELETE SET NULL,
+  policy_id uuid REFERENCES rsip_policies(id) ON DELETE SET NULL,
+  tree_node_id uuid REFERENCES rsip_tree_nodes(id) ON DELETE SET NULL,
+  group_id uuid REFERENCES rsip_groups(id) ON DELETE SET NULL,
   event_type text NOT NULL,
   payload jsonb NOT NULL DEFAULT '{}'::jsonb,
   occurred_at timestamptz NOT NULL DEFAULT now()

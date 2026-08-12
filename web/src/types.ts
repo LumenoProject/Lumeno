@@ -126,23 +126,95 @@ export interface NegativeState {
   updatedAt: string
 }
 
-export interface RsipNode {
+export type RsipPolicyMode = 'active' | 'passive' | 'anchored'
+
+export interface RsipPolicy {
   id: string
+  revisionId: string
+  revision: number
   negativeStateId?: string | null
   interventionStepId?: string | null
-  parentId?: string | null
-  state: 'draft' | 'active' | 'archived'
+  mode: RsipPolicyMode
   title: string
   triggerCondition: string
   requiredAction: string
   intendedPrevention: string
-  activatedOn?: string | null
-  activatedAt?: string | null
+  totalActiveSeconds: number
+  deploymentCount: number
   archivedAt?: string | null
-  failureReason?: string | null
   version: number
   createdAt: string
   updatedAt: string
+}
+
+export interface RsipTrial {
+  id: string
+  policyId: string
+  policyRevisionId: string
+  succeededOn: string
+  succeededAt: string
+  note: string
+  consumedNodeId?: string | null
+}
+
+export interface RsipGroup {
+  id: string
+  name: string
+  targetMemberCount: number
+  minimumActiveMembers: number
+  archivedAt?: string | null
+  version: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface RsipTreeNode {
+  id: string
+  kind: 'policy' | 'group'
+  title: string
+  policyMode?: RsipPolicyMode | null
+  triggerCondition?: string | null
+  requiredAction?: string | null
+  policyId?: string | null
+  policyRevisionId?: string | null
+  groupId?: string | null
+  parentNodeId?: string | null
+  state: 'active' | 'extinguished'
+  deployedOn?: string | null
+  deployedAt: string
+  extinguishedAt?: string | null
+  failureReason?: string | null
+  groupEverEffective: boolean
+  version: number
+}
+
+export interface RsipOverview {
+  localDate: string
+  canDeployToday: boolean
+  policies: RsipPolicy[]
+  trials: RsipTrial[]
+  groups: RsipGroup[]
+  nodes: RsipTreeNode[]
+  memberships: Array<{ groupNodeId: string; policyNodeId: string }>
+}
+
+export interface RsipHistoryPage {
+  items: RsipTreeNode[]
+  nextCursor?: string | null
+}
+
+export interface RsipToday {
+  localDate: string
+  canDeployToday: boolean
+  pendingTrials: Array<{ id: string; policyId: string; title: string }>
+  groups: Array<{
+    nodeId: string
+    name: string
+    activeMembers: number
+    minimumActiveMembers: number
+    targetMemberCount: number
+    everEffective: boolean
+  }>
 }
 
 export interface RollbackPreview {
@@ -150,4 +222,5 @@ export interface RollbackPreview {
   affected: Array<{ id: string; title: string }>
   affectedCount: number
   truncated: boolean
+  groupRemainsEffective?: boolean | null
 }

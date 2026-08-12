@@ -26,6 +26,32 @@ async fn seed_unit(pool: &PgPool, user: Uuid, name: &str) -> Result<Uuid, sqlx::
     Ok(id)
 }
 
+async fn seed_rsip_policy(
+    pool: &PgPool,
+    user: Uuid,
+    title: &str,
+) -> Result<(Uuid, Uuid), sqlx::Error> {
+    let policy = Uuid::now_v7();
+    let revision = Uuid::now_v7();
+    sqlx::query("INSERT INTO rsip_policies(id,user_id) VALUES($1,$2)")
+        .bind(policy)
+        .bind(user)
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO rsip_policy_revisions(\
+           id,policy_id,user_id,revision,mode,title,trigger_condition,required_action\
+         ) VALUES($1,$2,$3,1,'active',$4,'signal','act')",
+    )
+    .bind(revision)
+    .bind(policy)
+    .bind(user)
+    .bind(title)
+    .execute(pool)
+    .await?;
+    Ok((policy, revision))
+}
+
 #[sqlx::test(migrations = "./migrations")]
 async fn database_allows_only_one_active_focus_per_user(pool: PgPool) -> sqlx::Result<()> {
     let user = seed_user(&pool).await?;
@@ -53,28 +79,54 @@ async fn database_allows_only_one_active_focus_per_user(pool: PgPool) -> sqlx::R
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn rsip_activation_is_limited_to_one_per_local_date(pool: PgPool) -> sqlx::Result<()> {
+async fn rsip_deployment_is_limited_to_one_per_local_date(pool: PgPool) -> sqlx::Result<()> {
     let user = seed_user(&pool).await?;
-    let insert = "INSERT INTO rsip_nodes(id,user_id,state,title,trigger_condition,required_action,activated_on,activated_at) \
-                  VALUES($1,$2,'active',$3,'signal','act',DATE '2026-08-10',now())";
+    let (first_policy, first_revision) = seed_rsip_policy(&pool, user, "first").await?;
+    let (second_policy, second_revision) = seed_rsip_policy(&pool, user, "second").await?;
+    let insert = "INSERT INTO rsip_tree_nodes(\
+                    id,user_id,kind,policy_id,policy_revision_id,deployed_on\
+                  ) VALUES($1,$2,'policy',$3,$4,DATE '2026-08-10')";
     sqlx::query(insert)
         .bind(Uuid::now_v7())
         .bind(user)
-        .bind("first")
+        .bind(first_policy)
+        .bind(first_revision)
         .execute(&pool)
         .await?;
     let error = sqlx::query(insert)
         .bind(Uuid::now_v7())
         .bind(user)
-        .bind("second")
+        .bind(second_policy)
+        .bind(second_revision)
         .execute(&pool)
         .await
-        .expect_err("a second activation on the same date must fail");
+        .expect_err("a second deployment on the same local date must fail");
     assert!(
         error
             .as_database_error()
             .is_some_and(|db| db.is_unique_violation())
     );
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn rsip_relations_reject_cross_user_references(pool: PgPool) -> sqlx::Result<()> {
+    let first_user = seed_user(&pool).await?;
+    let second_user = seed_user(&pool).await?;
+    let (policy, revision) = seed_rsip_policy(&pool, second_user, "owned elsewhere").await?;
+    let error = sqlx::query(
+        "INSERT INTO rsip_tree_nodes(\
+           id,user_id,kind,policy_id,policy_revision_id,deployed_on\
+         ) VALUES($1,$2,'policy',$3,$4,DATE '2026-08-10')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(first_user)
+    .bind(policy)
+    .bind(revision)
+    .execute(&pool)
+    .await
+    .expect_err("a policy deployment cannot cross user boundaries");
+    assert!(error.as_database_error().is_some());
     Ok(())
 }
 
@@ -302,43 +354,174 @@ async fn archived_chains_are_user_scoped_and_ordered_by_archive_time(
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn rsip_failure_archives_only_the_selected_subtree(pool: PgPool) -> sqlx::Result<()> {
+async fn rsip_failure_extinguishes_only_the_selected_subtree(
+    pool: PgPool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let user = seed_user(&pool).await?;
+    let (root_policy, root_revision) = seed_rsip_policy(&pool, user, "root").await?;
+    let (child_policy, child_revision) = seed_rsip_policy(&pool, user, "child").await?;
+    let (other_policy, other_revision) = seed_rsip_policy(&pool, user, "other").await?;
     let root = Uuid::now_v7();
     let child = Uuid::now_v7();
-    let draft_child = Uuid::now_v7();
     let other = Uuid::now_v7();
-    for (id, parent, title) in [
-        (root, None, "root"),
-        (child, Some(root), "child"),
-        (other, None, "other"),
+    for (id, policy, revision, date, parent) in [
+        (root, root_policy, root_revision, "2026-08-09", None),
+        (
+            child,
+            child_policy,
+            child_revision,
+            "2026-08-10",
+            Some(root),
+        ),
+        (other, other_policy, other_revision, "2026-08-11", None),
     ] {
-        sqlx::query("INSERT INTO rsip_nodes(id,user_id,state,title,trigger_condition,required_action,activated_on,activated_at,parent_id) VALUES($1,$2,'active',$3,'signal','act',$4,now(),$5)")
-            .bind(id).bind(user).bind(title).bind(if id == other { chrono::NaiveDate::from_ymd_opt(2026,8,9).unwrap() } else if id == child { chrono::NaiveDate::from_ymd_opt(2026,8,11).unwrap() } else { chrono::NaiveDate::from_ymd_opt(2026,8,10).unwrap() }).bind(parent).execute(&pool).await?;
+        sqlx::query(
+            "INSERT INTO rsip_tree_nodes(\
+               id,user_id,kind,policy_id,policy_revision_id,deployed_on,deployed_at,parent_node_id\
+             ) VALUES($1,$2,'policy',$3,$4,$5::date,now()-interval '2 days',$6)",
+        )
+        .bind(id)
+        .bind(user)
+        .bind(policy)
+        .bind(revision)
+        .bind(date)
+        .bind(parent)
+        .execute(&pool)
+        .await?;
     }
-    sqlx::query("INSERT INTO rsip_nodes(id,user_id,state,title,trigger_condition,required_action,parent_id) VALUES($1,$2,'draft','draft child','signal','act',$3)")
-        .bind(draft_child).bind(user).bind(root).execute(&pool).await?;
-    sqlx::query("WITH RECURSIVE subtree AS (SELECT id FROM rsip_nodes WHERE id=$1 AND user_id=$2 AND state='active' UNION ALL SELECT n.id FROM rsip_nodes n JOIN subtree s ON n.parent_id=s.id WHERE n.user_id=$2 AND n.state<>'archived') UPDATE rsip_nodes SET state='archived',archived_at=now() WHERE id IN(SELECT id FROM subtree)")
-        .bind(root).bind(user).execute(&pool).await?;
-    let states =
-        sqlx::query_as::<_, (Uuid, String)>("SELECT id,state::text FROM rsip_nodes ORDER BY title")
-            .fetch_all(&pool)
-            .await?;
+
+    let mut tx = pool.begin().await?;
+    let impact = crate::rsip::failure_impact(&mut tx, user, root).await?;
+    let preview = crate::rsip::impact_preview(&mut tx, user, root, &impact).await?;
+    assert_eq!(preview.affected_count, 2);
+    crate::rsip::apply_failure(&mut tx, user, root, &impact, "root failed").await?;
+    tx.commit().await?;
+
+    let states = sqlx::query_as::<_, (Uuid, String)>(
+        "SELECT id,state::text FROM rsip_tree_nodes ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await?;
     assert_eq!(
         states.iter().find(|row| row.0 == root).unwrap().1,
-        "archived"
+        "extinguished"
     );
     assert_eq!(
         states.iter().find(|row| row.0 == child).unwrap().1,
-        "archived"
-    );
-    assert_eq!(
-        states.iter().find(|row| row.0 == draft_child).unwrap().1,
-        "archived"
+        "extinguished"
     );
     assert_eq!(
         states.iter().find(|row| row.0 == other).unwrap().1,
         "active"
     );
+    let root_seconds: i64 =
+        sqlx::query_scalar("SELECT total_active_seconds FROM rsip_policies WHERE id=$1")
+            .bind(root_policy)
+            .fetch_one(&pool)
+            .await?;
+    assert!(root_seconds >= 172_799);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn rsip_group_tolerance_preserves_members_but_extinguishes_dependents(
+    pool: PgPool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let user = seed_user(&pool).await?;
+    let group = Uuid::now_v7();
+    let group_node = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO rsip_groups(id,user_id,name,target_member_count,minimum_active_members) \
+         VALUES($1,$2,'tolerant group',3,2)",
+    )
+    .bind(group)
+    .bind(user)
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO rsip_tree_nodes(id,user_id,kind,group_id,group_ever_effective) \
+         VALUES($1,$2,'group',$3,true)",
+    )
+    .bind(group_node)
+    .bind(user)
+    .bind(group)
+    .execute(&pool)
+    .await?;
+
+    let mut members = Vec::new();
+    for (index, title) in ["member one", "member two", "member three"]
+        .into_iter()
+        .enumerate()
+    {
+        let (policy, revision) = seed_rsip_policy(&pool, user, title).await?;
+        let node = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO rsip_tree_nodes(\
+               id,user_id,kind,policy_id,policy_revision_id,deployed_on,deployed_at\
+             ) VALUES($1,$2,'policy',$3,$4,$5::date,now()-interval '2 days')",
+        )
+        .bind(node)
+        .bind(user)
+        .bind(policy)
+        .bind(revision)
+        .bind(format!("2026-08-{}", 9 + index))
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO rsip_group_members(group_node_id,policy_node_id,user_id) VALUES($1,$2,$3)",
+        )
+        .bind(group_node)
+        .bind(node)
+        .bind(user)
+        .execute(&pool)
+        .await?;
+        members.push(node);
+    }
+    let (dependent_policy, dependent_revision) = seed_rsip_policy(&pool, user, "dependent").await?;
+    let dependent = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO rsip_tree_nodes(\
+           id,user_id,kind,policy_id,policy_revision_id,deployed_on,deployed_at,parent_node_id\
+         ) VALUES($1,$2,'policy',$3,$4,DATE '2026-08-12',now()-interval '2 days',$5)",
+    )
+    .bind(dependent)
+    .bind(user)
+    .bind(dependent_policy)
+    .bind(dependent_revision)
+    .bind(group_node)
+    .execute(&pool)
+    .await?;
+
+    let mut tx = pool.begin().await?;
+    let first_impact = crate::rsip::failure_impact(&mut tx, user, members[0]).await?;
+    let first_preview =
+        crate::rsip::impact_preview(&mut tx, user, members[0], &first_impact).await?;
+    assert_eq!(first_preview.affected_count, 1);
+    assert_eq!(first_preview.group_remains_effective, Some(true));
+    crate::rsip::apply_failure(&mut tx, user, members[0], &first_impact, "member failed").await?;
+    tx.commit().await?;
+
+    let mut tx = pool.begin().await?;
+    let second_impact = crate::rsip::failure_impact(&mut tx, user, members[1]).await?;
+    let second_preview =
+        crate::rsip::impact_preview(&mut tx, user, members[1], &second_impact).await?;
+    assert_eq!(second_preview.affected_count, 2);
+    assert_eq!(second_preview.group_remains_effective, Some(false));
+    crate::rsip::apply_failure(&mut tx, user, members[1], &second_impact, "threshold lost").await?;
+    tx.commit().await?;
+
+    let (group_state, dependent_state, remaining_state): (String, String, String) = sqlx::query_as(
+        "SELECT g.state::text,d.state::text,m.state::text \
+             FROM rsip_tree_nodes g,rsip_tree_nodes d,rsip_tree_nodes m \
+             WHERE g.id=$1 AND d.id=$2 AND m.id=$3",
+    )
+    .bind(group_node)
+    .bind(dependent)
+    .bind(members[2])
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(group_state, "active");
+    assert_eq!(dependent_state, "extinguished");
+    assert_eq!(remaining_state, "active");
     Ok(())
 }

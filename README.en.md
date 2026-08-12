@@ -24,7 +24,8 @@ Lumeno is designed for deployment on a personal server or home network. It works
 - Contract chains: define tasks with a starting condition, required action, time limit, and booking signal.
 - Strict focus: once started, time continues without a pause option; an early stop or interruption requires a judgment.
 - Task groups: arrange multiple contracts into an ordered, nestable workflow.
-- Recursive patterns: trace backward from a failed outcome to find an earlier intervention point where the result could still change.
+- Recursive policies: trace backward from a failed outcome, then trial, revise, and deploy reusable interventions from a policy library.
+- Policy groups: express tolerance through target and minimum active-member counts, with threshold-aware downstream rollback.
 - Streaks and records: view total completions, failures, fulfillment rate, and an append-only protocol timeline.
 - Offline continuity: synchronize in-progress focus facts in order after connectivity returns.
 - External notifications: use Bark or a custom webhook, with optional Bark AES-256-GCM content encryption.
@@ -110,9 +111,11 @@ Archiving a contract does not remove cumulative records from the home page. Open
 
 ### 3. Turn a failure into the next intervention
 
-Open “Patterns,” describe the unacceptable outcome, trace the sequence of decisions backward, and write an intervention that can be recognized and performed next time.
+Open “Patterns,” describe the unacceptable outcome, trace the sequence of decisions backward, and write a policy that can be recognized and performed next time. A policy first lives in the library. It can be deployed only after its current revision succeeds in a full trial on the same local date. At most one policy deployment is added per local day, with the server calculating the date from the account time zone.
 
-At most one pattern can be activated per day. If an active pattern fails again, its descendants are archived with it, allowing you to restart from an earlier point in the chain.
+Policy identity, immutable revisions, and tree deployments are separate. Editing after a trial or deployment creates a revision while existing deployments keep their original meaning. When an ordinary deployment fails, it and its dependent descendants are extinguished, while the policy remains in the library for a later trial and deployment. Cumulative active days are complete 24-hour periods derived from actual active seconds across deployments; they are not a habit-strength score.
+
+Policy groups keep members separate from downstream dependencies. A group can support downstream deployments after reaching its minimum active-member count. A member failure that leaves the threshold intact extinguishes only that member. Falling below the threshold degrades the group and extinguishes downstream deployments while preserving other members. Adding enough members makes the group effective again, but previous downstream deployments do not revive automatically. An upstream failure extinguishes the group, its members, and its downstream tree.
 
 ### 4. Review protocol records
 
@@ -149,7 +152,7 @@ The allowlisted origin must match the complete address exactly. For example, `ht
 
 Open Lumeno in a browser with PWA support, then use the browser menu to install it on a desktop or mobile home screen. The mobile navigation provides six entries: Today, Contract Chains, Patterns, Records, Guide, and Settings.
 
-The browser time zone is synchronized after sign-in and determines the local date boundary for the once-per-day pattern activation rule. Reload the application after the device time zone changes.
+The browser time zone is synchronized after sign-in and determines the local date boundary for same-day trials and the once-per-day deployment rule. Reload the application after the device time zone changes.
 
 ## Upgrades and Backups
 
@@ -160,7 +163,7 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.yml pull
 docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d
 ```
 
-On first startup, the application automatically initializes an empty database with the schema required by the current version. Users, contracts, records, and notification configuration are stored in PostgreSQL. Back up the `postgres-data` volume or external database regularly, and verify that backups can be restored.
+On first startup, the application automatically initializes an empty database with the schema required by the current version. The phase-two RSIP model does not include an in-place upgrade or backfill path for the earlier `rsip_nodes` schema; do not apply this initial migration directly to an existing earlier database. Users, contracts, records, and notification configuration are stored in PostgreSQL. Back up the `postgres-data` volume or external database regularly, and verify that backups can be restored.
 
 To use an external PostgreSQL database, set `DATABASE_URL` in `deploy/.env`, then start only the application and ingress services:
 

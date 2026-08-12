@@ -242,10 +242,30 @@ pub struct TracebackStepInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CreateRsipDraftRequest {
+pub struct CreateRsipPolicyRequest {
     pub negative_state_id: Uuid,
     pub steps: Vec<TracebackStepInput>,
-    pub parent_id: Option<Uuid>,
+    pub mode: RsipPolicyMode,
+    pub title: String,
+    pub trigger_condition: String,
+    pub required_action: String,
+    pub intended_prevention: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, sqlx::Type)]
+#[sqlx(type_name = "rsip_policy_mode", rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+pub enum RsipPolicyMode {
+    Active,
+    Passive,
+    Anchored,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateRsipPolicyRequest {
+    pub version: i64,
+    pub mode: RsipPolicyMode,
     pub title: String,
     pub trigger_condition: String,
     pub required_action: String,
@@ -254,20 +274,20 @@ pub struct CreateRsipDraftRequest {
 
 #[derive(Debug, Serialize, FromRow)]
 #[serde(rename_all = "camelCase")]
-pub struct RsipNode {
+pub struct RsipPolicy {
     pub id: Uuid,
+    pub revision_id: Uuid,
+    pub revision: i32,
     pub negative_state_id: Option<Uuid>,
     pub intervention_step_id: Option<Uuid>,
-    pub parent_id: Option<Uuid>,
-    pub state: String,
+    pub mode: RsipPolicyMode,
     pub title: String,
     pub trigger_condition: String,
     pub required_action: String,
     pub intended_prevention: String,
-    pub activated_on: Option<NaiveDate>,
-    pub activated_at: Option<DateTime<Utc>>,
+    pub total_active_seconds: i64,
+    pub deployment_count: i64,
     pub archived_at: Option<DateTime<Utc>>,
-    pub failure_reason: Option<String>,
     pub version: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -275,13 +295,139 @@ pub struct RsipNode {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ActivateRsipRequest {
+pub struct CreateRsipTrialRequest {
+    #[serde(default)]
+    pub note: String,
+}
+
+#[derive(Debug, Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct RsipTrial {
+    pub id: Uuid,
+    pub policy_id: Uuid,
+    pub policy_revision_id: Uuid,
+    pub succeeded_on: NaiveDate,
+    pub succeeded_at: DateTime<Utc>,
+    pub note: String,
+    pub consumed_node_id: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeployRsipPolicyRequest {
+    pub trial_id: Uuid,
+    pub parent_node_id: Option<Uuid>,
+    pub group_node_id: Option<Uuid>,
+}
+
+#[derive(Debug, Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct RsipTreeNode {
+    pub id: Uuid,
+    pub kind: String,
+    pub title: String,
+    pub policy_mode: Option<RsipPolicyMode>,
+    pub trigger_condition: Option<String>,
+    pub required_action: Option<String>,
+    pub policy_id: Option<Uuid>,
+    pub policy_revision_id: Option<Uuid>,
+    pub group_id: Option<Uuid>,
+    pub parent_node_id: Option<Uuid>,
+    pub state: String,
+    pub deployed_on: Option<NaiveDate>,
+    pub deployed_at: DateTime<Utc>,
+    pub extinguished_at: Option<DateTime<Utc>>,
+    pub failure_reason: Option<String>,
+    pub group_ever_effective: bool,
     pub version: i64,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FailRsipRequest {
+pub struct CreateRsipGroupRequest {
+    pub name: String,
+    pub target_member_count: i32,
+    pub minimum_active_members: i32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateRsipGroupRequest {
+    pub version: i64,
+    pub name: String,
+    pub target_member_count: i32,
+    pub minimum_active_members: i32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeployRsipGroupRequest {
+    pub parent_node_id: Option<Uuid>,
+}
+
+#[derive(Debug, Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct RsipGroup {
+    pub id: Uuid,
+    pub name: String,
+    pub target_member_count: i32,
+    pub minimum_active_members: i32,
+    pub archived_at: Option<DateTime<Utc>>,
+    pub version: i64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct RsipGroupMember {
+    pub group_node_id: Uuid,
+    pub policy_node_id: Uuid,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RsipOverview {
+    pub local_date: NaiveDate,
+    pub can_deploy_today: bool,
+    pub policies: Vec<RsipPolicy>,
+    pub trials: Vec<RsipTrial>,
+    pub groups: Vec<RsipGroup>,
+    pub nodes: Vec<RsipTreeNode>,
+    pub memberships: Vec<RsipGroupMember>,
+}
+
+#[derive(Debug, Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct RsipTodayTrial {
+    pub id: Uuid,
+    pub policy_id: Uuid,
+    pub title: String,
+}
+
+#[derive(Debug, Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct RsipTodayGroup {
+    pub node_id: Uuid,
+    pub name: String,
+    pub active_members: i64,
+    pub minimum_active_members: i32,
+    pub target_member_count: i32,
+    pub ever_effective: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RsipToday {
+    pub local_date: NaiveDate,
+    pub can_deploy_today: bool,
+    pub pending_trials: Vec<RsipTodayTrial>,
+    pub groups: Vec<RsipTodayGroup>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FailRsipDeploymentRequest {
     pub version: i64,
     pub reason: String,
 }
@@ -293,6 +439,7 @@ pub struct RollbackPreview {
     pub affected: Vec<RsipNodeSummary>,
     pub affected_count: i64,
     pub truncated: bool,
+    pub group_remains_effective: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -300,4 +447,11 @@ pub struct RollbackPreview {
 pub struct RsipNodeSummary {
     pub id: Uuid,
     pub title: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RsipHistoryPage {
+    pub items: Vec<RsipTreeNode>,
+    pub next_cursor: Option<Uuid>,
 }

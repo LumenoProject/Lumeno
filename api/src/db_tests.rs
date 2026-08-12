@@ -4,9 +4,11 @@ use uuid::Uuid;
 async fn seed_user(pool: &PgPool) -> Result<Uuid, sqlx::Error> {
     let id = Uuid::now_v7();
     sqlx::query(
-        "INSERT INTO app_users(id,oidc_issuer,oidc_subject,display_name) VALUES($1,'https://issuer.example','subject','Tester')",
+        "INSERT INTO app_users(id,oidc_issuer,oidc_subject,display_name) \
+         VALUES($1,'https://issuer.example',$2,'Tester')",
     )
     .bind(id)
+    .bind(id.to_string())
     .execute(pool)
     .await?;
     Ok(id)

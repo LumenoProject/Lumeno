@@ -45,7 +45,7 @@ services:
       - /tmp:size=16m,mode=1777
 
   caddy:
-    image: caddy:2.11.4-alpine
+    image: caddy:2.11.7-alpine
     restart: unless-stopped
     environment:
       LUMENO_DOMAIN: ${LUMENO_DOMAIN:?set LUMENO_DOMAIN in deploy/.env}

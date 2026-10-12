@@ -5,7 +5,7 @@ RUN npm ci
 COPY web/ ./
 RUN npm run build
 
-FROM rust:1.97.1-bookworm AS api-build
+FROM rust:1.99.0-bookworm AS api-build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY api/Cargo.toml api/Cargo.toml
